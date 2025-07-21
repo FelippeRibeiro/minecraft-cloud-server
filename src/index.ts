@@ -4,7 +4,7 @@ if (!process.env.SERVICE_ACCOUNT_KEY_FILE) throw new Error('SERVICE_ACCOUNT_KEY_
 if (!process.env.FOLDER_ID) throw new Error('FOLDER_ID environment variable is not set.');
 if (!process.env.DISCORD_WEBHOOK_URL) throw new Error('DISCORD_WEBHOOK_URL environment variable is not set.');
 
-import fs from 'fs';
+import fs, { existsSync } from 'fs';
 import path from 'path';
 
 import AdmZip from 'adm-zip';
@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 import { hookDiscord } from './hook-discord';
 import axios from 'axios';
 import { userInfo } from 'os';
+import { downloadMinecraftServerJar, getPublicIp } from './utils';
 
 const SERVER_ZIP_FILENAME = 'server.zip';
 
@@ -22,14 +23,28 @@ const SERVER_ZIP_PATH = path.join(__dirname, '..', SERVER_ZIP_FILENAME);
 
 async function main() {
   console.log('Starting server setup...');
-  console.log('Deleting local server directory if it exists...');
-  deleteLocalServer();
-
   console.log('Fetching latest server updates from Google Drive...');
   const files = await getFileList();
   if (files.length === 0) {
-    console.log('No files found in Google Drive. Exiting setup.');
-    return;
+    try {
+      console.log('No files found in Google Drive. Exiting setup.');
+      console.log('Verifying if has a local server file...');
+
+      if (existsSync(path.join(SERVER_DIR, 'server.jar'))) {
+        console.log('Local server file found, starting it...');
+        await startServer();
+      } else {
+        console.log('No local server file found. downloading the latest server file from Mojang...');
+        await downloadMinecraftServerJar(SERVER_DIR);
+        console.log('Local server file downloaded successfully.');
+        console.log('Starting local server...');
+        await startServer();
+        return;
+      }
+    } catch (error) {
+      console.error('Error starting server:', error);
+      process.exit(1);
+    }
   }
   const serverFile = files.find((file) => file.name === SERVER_ZIP_FILENAME);
   if (!serverFile) {
@@ -48,11 +63,14 @@ async function main() {
   });
 
   console.log('Server file downloaded successfully.');
+  console.log('Deleting local server directory if it exists...');
 
+  deleteLocalServer();
   console.log('Setting up local server directory...');
 
   const fileZip = new AdmZip(SERVER_ZIP_PATH);
   fileZip.extractAllTo(path.join(__dirname, '..'), true);
+
   console.log('Server files extracted successfully.');
   if (fs.existsSync(SERVER_ZIP_PATH)) {
     fs.unlinkSync(SERVER_ZIP_PATH);
@@ -73,9 +91,7 @@ function deleteLocalServer() {
 }
 
 async function startServer() {
-  const {
-    data: { ip },
-  } = await axios.get<{ ip: string }>('https://api.ipify.org?format=json');
+  const ip = await getPublicIp();
 
   const server = spawn('java', ['-Xmx6G', '-Xms4G', '-jar', 'server.jar', 'nogui'], {
     cwd: SERVER_DIR,
@@ -92,6 +108,7 @@ async function startServer() {
     server.stdin.write('stop\n');
 
     server.once('close', () => () => saveServerAndExit());
+
     setTimeout(
       () => {
         console.log('Servidor não respondeu ao comando "stop". Forçando a saída.');
@@ -132,4 +149,5 @@ async function saveServerAndExit() {
     );
   }
 }
+
 main();
